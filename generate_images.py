@@ -164,6 +164,24 @@ def parse_args(input_args=None):
         type=int,
     )
     parser.add_argument(
+        "--data",
+        type=str,
+        default="nicopp",
+        help="dataset name: domainnet, officehome, officecaltech, nicopp",
+    )
+    parser.add_argument(
+        "--target-domain",
+        type=str,
+        default=None,
+        help="target domain for domain adaptation datasets",
+    )
+    parser.add_argument(
+        "--base-path",
+        type=str,
+        default=None,
+        help="directory containing dataset text files",
+    )
+    parser.add_argument(
         "--class_data_dir",
         type=str,
         default=None,
@@ -603,43 +621,57 @@ def main(args):
     #class_prompts = sorted(f)   
     #print(class_prompts[args.category])
 
-    nicopp_path = "/home/share/NICOpp/NICO_DG/autumn"
-    f = os.listdir(nicopp_path)
-    for i in range(len(f)):
-        f[i] = 'an image of ' + f[i].lower()
-    class_prompts = sorted(f) 
-    print(class_prompts[args.category])
-    
-    
-    #open_image_class_prompts,open_image_rough_classes = get_openimage_classes()
-    #class_prompts = open_image_rough_classes
-    if not os.path.exists(f'/home/share/gen_data_nips/nico_c/'+class_prompts[args.category]):
-        os.makedirs(f'/home/share/gen_data_nips/nico_c/'+class_prompts[args.category])        
-    
-    
+    if args.data == 'domainnet':
+        domains_all = ['clipart', 'infograph', 'painting', 'quickdraw', 'real', 'sketch']
+        target = args.target_domain if args.target_domain else domains_all[-1]
+        domains = [d for d in domains_all if d != target]
+        from datasets.DomainNet import get_domainnet_dataset_single
+        get_dataset = lambda d: get_domainnet_dataset_single(d, preprocess=transform)[0]
+        class_prompts = [str(i) for i in range(345)]
+        output_base = os.path.join(args.output_dir, 'domainnet')
+    elif args.data == 'officehome':
+        domains_all = ['Art', 'Clipart', 'Product', 'Real_World']
+        target = args.target_domain if args.target_domain else 'Real_World'
+        domains = [d for d in domains_all if d != target]
+        from datasets.officehome import get_officehome_dataset
+        get_dataset = lambda d: get_officehome_dataset(args.base_path, d, transform)
+        class_prompts = [str(i) for i in range(65)]
+        output_base = os.path.join(args.output_dir, 'officehome')
+    elif args.data == 'officecaltech':
+        domains_all = ['amazon', 'caltech', 'dslr', 'webcam']
+        target = args.target_domain if args.target_domain else 'caltech'
+        domains = [d for d in domains_all if d != target]
+        from datasets.officecaltech import get_officecaltech_dataset
+        get_dataset = lambda d: get_officecaltech_dataset(args.base_path, d, transform)
+        class_prompts = [str(i) for i in range(10)]
+        output_base = os.path.join(args.output_dir, 'officecaltech')
+    else:
+        domains = ['autumn', 'dim', 'grass', 'outdoor', 'rock','water']
+        from datasets.NICOPP import get_nicopp_dataset_single
+        get_dataset = lambda d: get_nicopp_dataset_single(transform=transform, divide=d, cate=args.category)[0]
+        nicopp_path = "/home/share/NICOpp/NICO_DG/autumn"
+        f = os.listdir(nicopp_path)
+        for i in range(len(f)):
+            f[i] = 'an image of ' + f[i].lower()
+        class_prompts = sorted(f)
+        output_base = os.path.join(args.output_dir, 'nicopp')
+    if not os.path.exists(os.path.join(output_base, class_prompts[args.category])):
+        os.makedirs(os.path.join(output_base, class_prompts[args.category]))
+
     uncond_inputs = tokenizer(
         '',
         padding="max_length",
         max_length=tokenizer.model_max_length,
-        return_tensors="pt",)
+        return_tensors="pt",
+    )
     uncond_input_ids = uncond_inputs.input_ids
     uncond_embeddings = text_encoder(uncond_input_ids.to(unet.device))[0]
     
-    #domains = ['clipart', 'infograph', 'painting','quickdraw', 'real', 'sketch']
-    domains = ['autumn', 'dim', 'grass', 'outdoor', 'rock','water']
-    
-    client_num= 6
-    generator = generator.manual_seed(args.category+args.seed)
-    train_epoch = [30,30,30,30,30,30]
-    #train_epoch = [5,5,5,5,5,5]
-    for client in range(client_num):
-
-        
-        #train_dataset,test_dataset = get_domainnet_dloader('/home/share/DomainNet',domains[client],1,preprocess = transform,cate = args.category)
-        #train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=1, num_workers=8,shuffle=True, pin_memory=True)
-        #train_dataset,test_dataset = get_openimage_dataset(transform,client,29,cate = args.category)
-        train_dataset,test_dataset = get_nicopp_dataset_single(transform = transform,divide=domains[client],cate = args.category)
-        #train_dataset,test_dataset = get_nicou_dataset_single(transform = transform,divide=client,cate = args.category)
+    client_num = len(domains)
+    generator = generator.manual_seed(args.category + args.seed)
+    train_epoch = [30 for _ in range(client_num)]
+    for client_idx, domain in enumerate(domains):
+        train_dataset = get_dataset(domain)
         
         train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=1, num_workers=4,shuffle=True, pin_memory=True)
         print(len(train_loader))
@@ -703,13 +735,13 @@ def main(args):
                 optimizer.zero_grad()
                 print("epoch",epoch,"step",step,"loss:",loss.detach().item(),'lr:',scheduler.get_last_lr()[0])
         res = model()
-        torch.save(res,'output/'+str(args.category)+domains[client]+'.tar')
+        torch.save(res, os.path.join(output_base, f"{args.category}_{domain}.tar"))
         
 
         with torch.no_grad():
             times = 0
             img_num = 0
-            while img_num < train_epoch[client] and times < 500:
+            while img_num < train_epoch[client_idx] and times < 500:
                 for repeat in range(1):
                     torch.cuda.empty_cache()
                     with accelerator.accumulate(unet):
@@ -763,10 +795,10 @@ def main(args):
                             np_image, nsfw_content_detected = safety_checker(
                                     images=np_image, clip_input=safety_checker_input.pixel_values.to(latents_dtype)
                                 )
-                            print("client",client,"category",step,"img_num",img_num,"timestep",int(timesteps))
+                            print("client", domain, "category", step, "img_num", img_num, "timestep", int(timesteps))
 
                             if nsfw_content_detected[0] == False:
-                                torchvision.utils.save_image(image, '/home/share/gen_data_nips/nico_c/'+class_prompts[args.category]+'/train_prop'+str(client)+'_'+str(img_num)+'.jpg')
+                                torchvision.utils.save_image(image, os.path.join(output_base, class_prompts[args.category], f'train_prop{domain}_{img_num}.jpg'))
                                 img_num = img_num + 1
                                 times = times + 1
                             else :
@@ -779,5 +811,4 @@ def main(args):
 
 
 if __name__ == "__main__":
-    args = parse_args()
-    main(args)
+    args = parse_args()    main(args)

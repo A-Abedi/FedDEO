@@ -126,5 +126,13 @@ def get_all_domainnet_dloader(base_path, batch_size, preprocess,num_workers=16):
         test_labels.extend(test_data_labels)
     train_dataset_client = DomainNet(train_paths, train_labels, preprocess)
     test_dataset = DomainNet(test_data_paths, test_data_labels, preprocess)
-    
     return train_dataset_client,test_dataset
+
+def get_domainnet_multi(base_path, domains, preprocess):
+    dataset_path = path.join(base_path)
+    all_paths, all_labels = [], []
+    for d in domains:
+        train_paths, train_labels = read_domainnet_data_train(dataset_path, d, split="train", shotnum=99999999)
+        all_paths.extend(train_paths)
+        all_labels.extend(train_labels)
+    return DomainNet(all_paths, all_labels, preprocess)

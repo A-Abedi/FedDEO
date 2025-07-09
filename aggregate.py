@@ -84,8 +84,8 @@ def get_parser():
     parser.add_argument('--base-path', default="/home/share/DomainNet")#/home/share/DomainNet/home/share/tiny-imagenet-200
     parser.add_argument('--alpha', default=1,type=float,help='degree of non-iid, only used for tinyimagenet')
     parser.add_argument('--beta', default=0,type=float,help='degree of noise')
-    parser.add_argument('--data', default='nicopp',help='tinyimagenet or domainnet or openimage or nicopp or nicou or officehome')
-    parser.add_argument('--target-domain', default='Real_World', help='target domain for officehome dataset')
+    parser.add_argument('--data', default='nicopp',help='tinyimagenet or domainnet or openimage or nicopp or nicou or officehome or officecaltech')
+    parser.add_argument('--target-domain', default=None, help='target domain for domain adaptation datasets')
     parser.add_argument('--seed', default=0,type=int,)
     parser.add_argument('--batch_size', default=32,type=int,)
     parser.add_argument('--serverbs', default=256,type=int,)
@@ -113,7 +113,7 @@ accelerator = Accelerator(
     gradient_accumulation_steps=1,
     mixed_precision=None)
 
-if args.data  == 'domainnet': 
+if args.data  == 'domainnet':
     num_classes = 90
     transform = transforms.Compose([
         transforms.ToTensor(),
@@ -126,26 +126,23 @@ if args.data  == 'domainnet':
           [0.48145466, 0.4578275, 0.40821073],
           [0.26862954, 0.26130258, 0.27577711]),
     ])
-    #domains = ['painting', 'quickdraw', 'real', 'sketch']
-    domains = ['clipart', 'infograph', 'painting','quickdraw', 'real', 'sketch']#['clipart', 'infograph', 'painting', 'quickdraw', 'real', 'sketch']
-    clients,test_data = [],[]
-    server_labeled = {ddd:None for ddd in domains}
-    server_dataset,test_dataset = get_all_domainnet_dloader(args.base_path,256,transform)
-    server_loader = torch.utils.data.DataLoader(server_dataset, batch_size=256, num_workers=8,shuffle=True, pin_memory=True)
-    server_test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=256, num_workers=8,shuffle=False, pin_memory=True)
-    print(f'server train data num:',len(server_dataset),len(test_dataset))
-    for domain in domains:
-        # print(domain)
-        train_dataset_client,testdataset = get_domainnet_dloader(args.base_path,domain,args.batch_size,transform)
-        print(f'client {domain} data num:',len(train_dataset_client),len(testdataset))
-        test_loader = torch.utils.data.DataLoader(testdataset, batch_size=256, num_workers=8,shuffle=False, pin_memory=True)
-        trainloader = torch.utils.data.DataLoader(train_dataset_client, batch_size=args.batch_size, num_workers=8,shuffle=True,drop_last = True , pin_memory=True)
+    domains = ['clipart', 'infograph', 'painting', 'quickdraw', 'real', 'sketch']
+    target = args.target_domain if args.target_domain is not None else domains[-1]
+    source_domains = [d for d in domains if d != target]
+    clients, test_data = [], []
+    from datasets.DomainNet import get_domainnet_dloader, get_domainnet_multi
+    server_dataset = get_domainnet_multi(args.base_path, source_domains, transform)
+    server_loader = torch.utils.data.DataLoader(server_dataset, batch_size=args.batch_size, num_workers=8, shuffle=True, pin_memory=True)
+    _, target_dataset = get_domainnet_dloader(args.base_path, target, args.batch_size, transform)
+    test_data.append(torch.utils.data.DataLoader(target_dataset, batch_size=256, num_workers=8, shuffle=False, pin_memory=True))
+    for domain in source_domains:
+        train_dataset_client, _ = get_domainnet_dloader(args.base_path, domain, args.batch_size, transform)
+        print(f'client {domain} data num:', len(train_dataset_client))
+        trainloader = torch.utils.data.DataLoader(train_dataset_client, batch_size=args.batch_size, num_workers=8, shuffle=True, drop_last=True, pin_memory=True)
         trainloader = accelerator.prepare(trainloader)
-        test_loader = accelerator.prepare(test_loader)
-        client = Client(trainloader,num_classes,beta=args.beta,accelerator=accelerator,domain_name = domain)
+        client = Client(trainloader, num_classes, beta=args.beta, accelerator=accelerator, domain_name=domain)
         client.model = accelerator.prepare(client.model)
         clients.append(client)
-        test_data.append(test_loader)
         
 elif args.data =='nicopp':
     num_classes = 60
@@ -260,7 +257,7 @@ elif args.data =='nicou':
 
 elif args.data == 'officehome':
     domains = ['Art', 'Clipart', 'Product', 'Real_World']
-    target = args.target_domain
+    target = args.target_domain if args.target_domain else 'Real_World'
     source_domains = [d for d in domains if d != target]
     num_classes = 65
     transform = transforms.Compose([
@@ -284,6 +281,36 @@ elif args.data == 'officehome':
     clients = []
     for domain in source_domains:
         client_dataset = get_officehome_dataset(list_dir, domain, transform)
+        trainloader = torch.utils.data.DataLoader(client_dataset, batch_size=args.batch_size, num_workers=8, shuffle=True, drop_last=True, pin_memory=True)
+        client = Client(trainloader, num_classes, beta=args.beta, accelerator=accelerator, domain_name=domain)
+        clients.append(client)
+
+elif args.data == 'officecaltech':
+    domains = ['amazon', 'caltech', 'dslr', 'webcam']
+    target = args.target_domain if args.target_domain else 'caltech'
+    source_domains = [d for d in domains if d != target]
+    num_classes = 10
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Resize(
+            (224, 224),
+            interpolation=transforms.InterpolationMode.BICUBIC,
+            antialias=False,
+        ),
+        transforms.Normalize(
+            [0.48145466, 0.4578275, 0.40821073],
+            [0.26862954, 0.26130258, 0.27577711]),
+    ])
+    from datasets.officecaltech import get_officecaltech_dataset, get_officecaltech_multi
+    list_dir = args.base_path
+    print('getting server data')
+    server_dataset = get_officecaltech_multi(list_dir, source_domains, transform)
+    server_loader = torch.utils.data.DataLoader(server_dataset, batch_size=args.batch_size, num_workers=8, shuffle=True, pin_memory=True)
+    target_dataset = get_officecaltech_dataset(list_dir, target, transform)
+    test_data = [torch.utils.data.DataLoader(target_dataset, batch_size=256, num_workers=8, shuffle=False, pin_memory=True)]
+    clients = []
+    for domain in source_domains:
+        client_dataset = get_officecaltech_dataset(list_dir, domain, transform)
         trainloader = torch.utils.data.DataLoader(client_dataset, batch_size=args.batch_size, num_workers=8, shuffle=True, drop_last=True, pin_memory=True)
         client = Client(trainloader, num_classes, beta=args.beta, accelerator=accelerator, domain_name=domain)
         clients.append(client)
